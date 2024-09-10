@@ -398,8 +398,10 @@ mod tests {
     use plonky2::plonk::circuit_data::CircuitConfig;
     use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig};
     use rand::Rng;
+    use sha2::{Digest, Sha256};
 
-    use crate::circuit::make_circuits;
+    use crate::circuit::{make_circuits, Sha256Targets};
+    use crate::circuit::{Digest as Sha256TargetsDigest, Update};
     use crate::utils::array_to_bits;
 
     const EXPECTED_RES: [u8; 256] = [
@@ -484,5 +486,119 @@ mod tests {
         let proof = data.prove(pw).unwrap();
 
         data.verify(proof).expect("");
+    }
+
+    #[test]
+    fn test_update() {
+        const D: usize = 2;
+        type C = PoseidonGoldilocksConfig;
+        type F = <C as GenericConfig<D>>::F;
+        let mut builder = CircuitBuilder::<F, D>::new(CircuitConfig::standard_recursion_config());
+
+        let mut msg = vec![0; 128_usize];
+        for i in 0..127 {
+            msg[i] = i as u8;
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(msg.clone());
+        let hash = hasher.finalize();
+        let exp_res = array_to_bits(hash.as_slice());
+
+        let zero_bit = builder._false();
+        let one_bit = builder._true();
+        let msg_bit_targets: Vec<_> = msg
+            .iter()
+            .flat_map(|byte| {
+                (0..8).rev().map(move |i| {
+                    if (byte >> i) & 1 == 1 {
+                        one_bit
+                    } else {
+                        zero_bit
+                    }
+                })
+            })
+            .collect();
+        let mut hasher = Sha256Targets::new(&mut builder);
+        hasher.update(&msg_bit_targets);
+        let res = hasher.finalize(&mut builder).digest;
+
+        for i in 0..exp_res.len() {
+            if exp_res[i] {
+                builder.assert_one(res[i].target);
+            } else {
+                builder.assert_zero(res[i].target);
+            }
+        }
+
+        let pw = PartialWitness::new();
+        let data = builder.build::<C>();
+        let _proof = data.prove(pw);
+    }
+
+    #[test]
+    fn test_chain_update() {
+        const D: usize = 2;
+        type C = PoseidonGoldilocksConfig;
+        type F = <C as GenericConfig<D>>::F;
+        let mut builder = CircuitBuilder::<F, D>::new(CircuitConfig::standard_recursion_config());
+
+        let mut msg_1 = vec![0; 128_usize];
+        for i in 0..127 {
+            msg_1[i] = i as u8;
+        }
+        let mut msg_2 = vec![0; 128_usize];
+        for i in (0..127).rev() {
+            msg_2[i] = i as u8;
+        }
+        let hash = Sha256::new()
+            .chain_update(msg_1.clone())
+            .chain_update(msg_2.clone())
+            .finalize();
+        let exp_res = array_to_bits(hash.as_slice());
+
+        let zero_bit = builder._false();
+        let one_bit = builder._true();
+        let msg_1_targets: Vec<_> = msg_1
+            .iter()
+            .flat_map(|byte| {
+                (0..8).rev().map(move |i| {
+                    if (byte >> i) & 1 == 1 {
+                        one_bit
+                    } else {
+                        zero_bit
+                    }
+                })
+            })
+            .collect();
+        let msg_2_targets: Vec<_> = msg_2
+            .iter()
+            .flat_map(|byte| {
+                (0..8).rev().map(move |i| {
+                    if (byte >> i) & 1 == 1 {
+                        one_bit
+                    } else {
+                        zero_bit
+                    }
+                })
+            })
+            .collect();
+
+        let res = Sha256Targets::new(&mut builder)
+            .chain_update(&msg_1_targets)
+            .chain_update(&msg_2_targets)
+            .finalize(&mut builder)
+            .digest;
+
+        for i in 0..exp_res.len() {
+            if exp_res[i] {
+                builder.assert_one(res[i].target);
+            } else {
+                builder.assert_zero(res[i].target);
+            }
+        }
+
+        let pw = PartialWitness::new();
+        let data = builder.build::<C>();
+        let _proof = data.prove(pw);
     }
 }
