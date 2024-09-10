@@ -11,16 +11,33 @@ pub struct Sha256Targets {
     pub digest: Vec<BoolTarget>,
 }
 
-pub trait Update {
+pub trait Digest {
+    /// Create new hasher gadget.
+    fn new() -> Self;
+
     /// Process message, updating the internal state.
     fn update(&mut self, message: &Vec<BoolTarget>);
 
     /// Process input message in a chained manner
     #[must_use]
     fn chain_update(self, message: &Vec<BoolTarget>) -> Self;
+
+    /// Retrieve result and consume hasher instance.
+    fn finalize<F: RichField + Extendable<D>, const D: usize>(
+        self,
+        builder: &mut CircuitBuilder<F, D>,
+    ) -> Sha256Targets;
 }
 
-impl Update for Sha256Targets {
+impl Digest for Sha256Targets {
+    #[inline]
+    fn new() -> Self {
+        let message = Vec::new();
+        let digest = Vec::new();
+
+        Self { message, digest }
+    }
+
     #[inline]
     fn update(&mut self, message: &Vec<BoolTarget>) {
         self.message.extend(message.clone());
@@ -31,33 +48,12 @@ impl Update for Sha256Targets {
         self.update(message);
         self
     }
-}
-
-pub trait Digest<F, const D: usize>
-where
-    F: RichField + Extendable<D>,
-{
-    /// Create new hasher gadget.
-    fn new(builder: &mut CircuitBuilder<F, D>) -> Self;
-
-    /// Retrieve result and consume hasher instance.
-    fn finalize(self, builder: &mut CircuitBuilder<F, D>) -> Sha256Targets;
-}
-
-impl<F, const D: usize> Digest<F, D> for Sha256Targets
-where
-    F: RichField + Extendable<D>,
-{
-    #[inline]
-    fn new(builder: &mut CircuitBuilder<F, D>) -> Self {
-        let message = Vec::new();
-        let digest = Vec::new();
-
-        Self { message, digest }
-    }
 
     #[inline]
-    fn finalize(mut self, builder: &mut CircuitBuilder<F, D>) -> Sha256Targets {
+    fn finalize<F: RichField + Extendable<D>, const D: usize>(
+        mut self,
+        builder: &mut CircuitBuilder<F, D>,
+    ) -> Sha256Targets {
         let msg_len_in_bits = self.message.len();
         let block_count = (msg_len_in_bits + 65 + 511) / 512;
         let padded_msg_len = 512 * block_count;
@@ -385,7 +381,7 @@ pub fn make_circuits<F: RichField + Extendable<D>, const D: usize>(
     for _ in 0..msg_len_in_bits {
         message.push(builder.add_virtual_bool_target_unsafe());
     }
-    let mut hasher = Sha256Targets::new(builder);
+    let mut hasher = Sha256Targets::new();
     hasher.update(&message);
     hasher.finalize(builder)
 }
@@ -400,8 +396,8 @@ mod tests {
     use rand::Rng;
     use sha2::{Digest, Sha256};
 
+    use crate::circuit::Digest as Sha256TargetsDigest;
     use crate::circuit::{make_circuits, Sha256Targets};
-    use crate::circuit::{Digest as Sha256TargetsDigest, Update};
     use crate::utils::array_to_bits;
 
     const EXPECTED_RES: [u8; 256] = [
@@ -518,7 +514,7 @@ mod tests {
                 })
             })
             .collect();
-        let mut hasher = Sha256Targets::new(&mut builder);
+        let mut hasher = Sha256Targets::new();
         hasher.update(&msg_bit_targets);
         let res = hasher.finalize(&mut builder).digest;
 
@@ -583,7 +579,7 @@ mod tests {
             })
             .collect();
 
-        let res = Sha256Targets::new(&mut builder)
+        let res = Sha256Targets::new()
             .chain_update(&msg_1_targets)
             .chain_update(&msg_2_targets)
             .finalize(&mut builder)
