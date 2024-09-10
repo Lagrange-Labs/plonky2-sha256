@@ -96,7 +96,7 @@ where
             let mut h = state[7];
 
             for i in 0..16 {
-                let index = blk as usize * 512 + i * 32;
+                let index = blk * 512 + i * 32;
                 let u32_target = builder.le_sum(self.message[index..index + 32].iter().rev());
 
                 x.push(U32Target(u32_target));
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn test_sha256() -> Result<()> {
-        let mut msg = vec![0; 128 as usize];
+        let mut msg = vec![0; 128_usize];
         for i in 0..127 {
             msg[i] = i as u8;
         }
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_sha256_failure() {
-        let mut msg = vec![0; 128 as usize];
+        let mut msg = vec![0; 128_usize];
         for i in 0..127 {
             msg[i] = i as u8;
         }

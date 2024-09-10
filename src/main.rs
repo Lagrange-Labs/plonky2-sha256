@@ -62,7 +62,7 @@ fn main() -> Result<()> {
     builder.try_init()?;
 
     const MSG_SIZE: usize = 2828;
-    let mut msg = vec![0; MSG_SIZE as usize];
+    let mut msg = vec![0; MSG_SIZE];
     for i in 0..MSG_SIZE - 1 {
         msg[i] = i as u8;
     }
