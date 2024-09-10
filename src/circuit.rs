@@ -11,6 +11,167 @@ pub struct Sha256Targets {
     pub digest: Vec<BoolTarget>,
 }
 
+pub trait Update {
+    /// Process message, updating the internal state.
+    fn update(&mut self, message: &Vec<BoolTarget>);
+
+    /// Process input message in a chained manner
+    #[must_use]
+    fn chain_update(self, message: &Vec<BoolTarget>) -> Self;
+}
+
+impl Update for Sha256Targets {
+    #[inline]
+    fn update(&mut self, message: &Vec<BoolTarget>) {
+        self.message.extend(message.clone());
+    }
+
+    #[inline]
+    fn chain_update(mut self, message: &Vec<BoolTarget>) -> Self {
+        self.update(message);
+        self
+    }
+}
+
+pub trait Digest<F, const D: usize>
+where
+    F: RichField + Extendable<D>,
+{
+    /// Create new hasher gadget.
+    fn new(builder: &mut CircuitBuilder<F, D>) -> Self;
+
+    /// Retrieve result and consume hasher instance.
+    fn finalize(self, builder: &mut CircuitBuilder<F, D>) -> Sha256Targets;
+}
+
+impl<F, const D: usize> Digest<F, D> for Sha256Targets
+where
+    F: RichField + Extendable<D>,
+{
+    #[inline]
+    fn new(builder: &mut CircuitBuilder<F, D>) -> Self {
+        let message = Vec::new();
+        let digest = Vec::new();
+
+        Self { message, digest }
+    }
+
+    #[inline]
+    fn finalize(mut self, builder: &mut CircuitBuilder<F, D>) -> Sha256Targets {
+        let msg_len_in_bits = self.message.len();
+        let block_count = (msg_len_in_bits + 65 + 511) / 512;
+        let padded_msg_len = 512 * block_count;
+        let p = padded_msg_len - 64 - msg_len_in_bits;
+        assert!(p > 1);
+
+        self.message.push(builder.constant_bool(true));
+        for _ in 0..p - 1 {
+            self.message.push(builder.constant_bool(false));
+        }
+        for i in 0..64 {
+            let b = (msg_len_in_bits >> (63 - i)) & 1;
+            self.message.push(builder.constant_bool(b == 1));
+        }
+
+        // init states
+        let mut state = Vec::new();
+        for i in 0..8 {
+            state.push(builder.constant_u32(H256[i]));
+        }
+
+        let mut k256 = Vec::new();
+        for i in 0..64 {
+            k256.push(builder.constant_u32(K256[i]));
+        }
+
+        for blk in 0..block_count {
+            let mut x = Vec::new();
+            let mut a = state[0];
+            let mut b = state[1];
+            let mut c = state[2];
+            let mut d = state[3];
+            let mut e = state[4];
+            let mut f = state[5];
+            let mut g = state[6];
+            let mut h = state[7];
+
+            for i in 0..16 {
+                let index = blk as usize * 512 + i * 32;
+                let u32_target = builder.le_sum(self.message[index..index + 32].iter().rev());
+
+                x.push(U32Target(u32_target));
+                let mut t1 = h;
+                let big_sigma1_e = big_sigma1(builder, &e);
+                t1 = add_u32(builder, &t1, &big_sigma1_e);
+                let ch_e_f_g = ch(builder, &e, &f, &g);
+                t1 = add_u32(builder, &t1, &ch_e_f_g);
+                t1 = add_u32(builder, &t1, &k256[i]);
+                t1 = add_u32(builder, &t1, &x[i]);
+
+                let mut t2 = big_sigma0(builder, &a);
+                let maj_a_b_c = maj(builder, &a, &b, &c);
+                t2 = add_u32(builder, &t2, &maj_a_b_c);
+
+                h = g;
+                g = f;
+                f = e;
+                e = add_u32(builder, &d, &t1);
+                d = c;
+                c = b;
+                b = a;
+                a = add_u32(builder, &t1, &t2);
+            }
+
+            for i in 16..64 {
+                let s0 = sigma0(builder, &x[(i + 1) & 0x0f]);
+                let s1 = sigma1(builder, &x[(i + 14) & 0x0f]);
+
+                let s0_add_s1 = add_u32(builder, &s0, &s1);
+                let s0_add_s1_add_x = add_u32(builder, &s0_add_s1, &x[(i + 9) & 0xf]);
+                x[i & 0xf] = add_u32(builder, &x[i & 0xf], &s0_add_s1_add_x);
+
+                let big_sigma0_a = big_sigma0(builder, &a);
+                let big_sigma1_e = big_sigma1(builder, &e);
+                let ch_e_f_g = ch(builder, &e, &f, &g);
+                let maj_a_b_c = maj(builder, &a, &b, &c);
+
+                let h_add_sigma1 = add_u32(builder, &h, &big_sigma1_e);
+                let h_add_sigma1_add_ch_e_f_g = add_u32(builder, &h_add_sigma1, &ch_e_f_g);
+                let h_add_sigma1_add_ch_e_f_g_add_k256 =
+                    add_u32(builder, &h_add_sigma1_add_ch_e_f_g, &k256[i]);
+
+                let t1 = add_u32(builder, &x[i & 0xf], &h_add_sigma1_add_ch_e_f_g_add_k256);
+                let t2 = add_u32(builder, &big_sigma0_a, &maj_a_b_c);
+
+                h = g;
+                g = f;
+                f = e;
+                e = add_u32(builder, &d, &t1);
+                d = c;
+                c = b;
+                b = a;
+                a = add_u32(builder, &t1, &t2);
+            }
+
+            state[0] = add_u32(builder, &state[0], &a);
+            state[1] = add_u32(builder, &state[1], &b);
+            state[2] = add_u32(builder, &state[2], &c);
+            state[3] = add_u32(builder, &state[3], &d);
+            state[4] = add_u32(builder, &state[4], &e);
+            state[5] = add_u32(builder, &state[5], &f);
+            state[6] = add_u32(builder, &state[6], &g);
+            state[7] = add_u32(builder, &state[7], &h);
+        }
+        for i in 0..8 {
+            let bit_targets = builder.split_le_base::<2>(state[i].0, 32);
+            for j in (0..32).rev() {
+                self.digest.push(BoolTarget::new_unsafe(bit_targets[j]));
+            }
+        }
+        self
+    }
+}
+
 // define ROTATE(x, y)  (((x)>>(y)) | ((x)<<(32-(y))))
 fn rotate32(y: usize) -> Vec<usize> {
     let mut res = Vec::new();
@@ -221,122 +382,12 @@ pub fn make_circuits<F: RichField + Extendable<D>, const D: usize>(
     msg_len_in_bits: u64,
 ) -> Sha256Targets {
     let mut message = Vec::new();
-    let mut digest = Vec::new();
-    let block_count = (msg_len_in_bits + 65 + 511) / 512;
-    let padded_msg_len = 512 * block_count;
-    let p = padded_msg_len - 64 - msg_len_in_bits;
-    assert!(p > 1);
-
     for _ in 0..msg_len_in_bits {
         message.push(builder.add_virtual_bool_target_unsafe());
     }
-    message.push(builder.constant_bool(true));
-    for _ in 0..p - 1 {
-        message.push(builder.constant_bool(false));
-    }
-    for i in 0..64 {
-        let b = ((msg_len_in_bits as u64) >> (63 - i)) & 1;
-        message.push(builder.constant_bool(b == 1));
-    }
-
-    // init states
-    let mut state = Vec::new();
-    for i in 0..8 {
-        state.push(builder.constant_u32(H256[i]));
-    }
-
-    let mut k256 = Vec::new();
-    for i in 0..64 {
-        k256.push(builder.constant_u32(K256[i]));
-    }
-
-    for blk in 0..block_count {
-        let mut x = Vec::new();
-        let mut a = state[0].clone();
-        let mut b = state[1].clone();
-        let mut c = state[2].clone();
-        let mut d = state[3].clone();
-        let mut e = state[4].clone();
-        let mut f = state[5].clone();
-        let mut g = state[6].clone();
-        let mut h = state[7].clone();
-
-        for i in 0..16 {
-            let index = blk as usize * 512 + i * 32;
-            let u32_target = builder.le_sum(message[index..index + 32].iter().rev());
-
-            x.push(U32Target(u32_target));
-            let mut t1 = h.clone();
-            let big_sigma1_e = big_sigma1(builder, &e);
-            t1 = add_u32(builder, &t1, &big_sigma1_e);
-            let ch_e_f_g = ch(builder, &e, &f, &g);
-            t1 = add_u32(builder, &t1, &ch_e_f_g);
-            t1 = add_u32(builder, &t1, &k256[i]);
-            t1 = add_u32(builder, &t1, &x[i]);
-
-            let mut t2 = big_sigma0(builder, &a);
-            let maj_a_b_c = maj(builder, &a, &b, &c);
-            t2 = add_u32(builder, &t2, &maj_a_b_c);
-
-            h = g;
-            g = f;
-            f = e;
-            e = add_u32(builder, &d, &t1);
-            d = c;
-            c = b;
-            b = a;
-            a = add_u32(builder, &t1, &t2);
-        }
-
-        for i in 16..64 {
-            let s0 = sigma0(builder, &x[(i + 1) & 0x0f]);
-            let s1 = sigma1(builder, &x[(i + 14) & 0x0f]);
-
-            let s0_add_s1 = add_u32(builder, &s0, &s1);
-            let s0_add_s1_add_x = add_u32(builder, &s0_add_s1, &x[(i + 9) & 0xf]);
-            x[i & 0xf] = add_u32(builder, &x[i & 0xf], &s0_add_s1_add_x);
-
-            let big_sigma0_a = big_sigma0(builder, &a);
-            let big_sigma1_e = big_sigma1(builder, &e);
-            let ch_e_f_g = ch(builder, &e, &f, &g);
-            let maj_a_b_c = maj(builder, &a, &b, &c);
-
-            let h_add_sigma1 = add_u32(builder, &h, &big_sigma1_e);
-            let h_add_sigma1_add_ch_e_f_g = add_u32(builder, &h_add_sigma1, &ch_e_f_g);
-            let h_add_sigma1_add_ch_e_f_g_add_k256 =
-                add_u32(builder, &h_add_sigma1_add_ch_e_f_g, &k256[i]);
-
-            let t1 = add_u32(builder, &x[i & 0xf], &h_add_sigma1_add_ch_e_f_g_add_k256);
-            let t2 = add_u32(builder, &big_sigma0_a, &maj_a_b_c);
-
-            h = g;
-            g = f;
-            f = e;
-            e = add_u32(builder, &d, &t1);
-            d = c;
-            c = b;
-            b = a;
-            a = add_u32(builder, &t1, &t2);
-        }
-
-        state[0] = add_u32(builder, &state[0], &a);
-        state[1] = add_u32(builder, &state[1], &b);
-        state[2] = add_u32(builder, &state[2], &c);
-        state[3] = add_u32(builder, &state[3], &d);
-        state[4] = add_u32(builder, &state[4], &e);
-        state[5] = add_u32(builder, &state[5], &f);
-        state[6] = add_u32(builder, &state[6], &g);
-        state[7] = add_u32(builder, &state[7], &h);
-    }
-
-    for i in 0..8 {
-        let bit_targets = builder.split_le_base::<2>(state[i].0, 32);
-        for j in (0..32).rev() {
-            digest.push(BoolTarget::new_unsafe(bit_targets[j]));
-        }
-    }
-
-    Sha256Targets { message, digest }
+    let mut hasher = Sha256Targets::new(builder);
+    hasher.update(&message);
+    hasher.finalize(builder)
 }
 
 #[cfg(test)]
