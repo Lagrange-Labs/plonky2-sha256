@@ -5,7 +5,8 @@ use plonky2::plonk::circuit_builder::CircuitBuilder;
 use plonky2::plonk::circuit_data::CircuitConfig;
 use plonky2::plonk::config::{GenericConfig, PoseidonGoldilocksConfig};
 use plonky2::util::timing::TimingTree;
-use plonky2_sha256::circuit::{array_to_bits, make_circuits};
+use plonky2_sha256::circuit::make_circuits;
+use plonky2_sha256::utils::array_to_bits;
 use sha2::{Digest, Sha256};
 
 pub fn prove_sha256(msg: &[u8]) -> Result<()> {
@@ -61,7 +62,7 @@ fn main() -> Result<()> {
     builder.try_init()?;
 
     const MSG_SIZE: usize = 2828;
-    let mut msg = vec![0; MSG_SIZE as usize];
+    let mut msg = vec![0; MSG_SIZE];
     for i in 0..MSG_SIZE - 1 {
         msg[i] = i as u8;
     }
